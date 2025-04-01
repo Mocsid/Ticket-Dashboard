@@ -12,7 +12,7 @@ import {
 } from "@dnd-kit/core";
 import {
   SortableContext,
-  rectSortingStrategy,  // <-- For multi-column grids
+  rectSortingStrategy,
 } from "@dnd-kit/sortable";
 
 import TicketCard from "./components/TicketCard";
@@ -31,21 +31,22 @@ function App() {
   const [showCategoryForm, setShowCategoryForm] = useState(false);
   const [message, setMessage] = useState("");
 
-  // Sensors for drag
+  // We only separate "done" from everything else
+  // The 5 statuses all remain in "open" group unless status is "done".
+
   const sensors = useSensors(useSensor(PointerSensor));
 
-  // Load tickets & categories from Firebase
   useEffect(() => {
+    // Load tickets
     onValue(ref(db, "tickets"), (snap) => {
-      const data = snap.val() || {};
-      setTickets(data);
+      setTickets(snap.val() || {});
     });
+
+    // Load categories
     onValue(ref(db, "categories"), (snap) => {
       const cats = snap.val() || {};
       const keys = Object.keys(cats);
       setCategories(keys);
-
-      // If no category set on newTicket, default to first
       if (!newTicket.category && keys.length > 0) {
         setNewTicket((prev) => ({ ...prev, category: keys[0] }));
       }
@@ -71,17 +72,20 @@ function App() {
     const newRef = push(ref(db, "tickets"));
     await set(newRef, {
       ...newTicket,
-      status: "open",
+      status: "New",   // default status
       createdAt: Date.now(),
-      position: 0, // default
+      position: 0,
     });
     setNewTicket({ title: "", category: categories[0] || "", link: "", description: "" });
     setShowTicketForm(false);
     flashMessage("Ticket created successfully!");
   };
 
+  // The user might still check/uncheck to "done" outside of the 5 statuses (optional).
+  // If you no longer want a "done" checkbox, remove or adjust.
   const handleToggle = (id, currentStatus) => {
-    const newStatus = currentStatus === "done" ? "open" : "done";
+    // "done" is separate from the 5 statuses
+    const newStatus = currentStatus === "done" ? "New" : "done";
     update(ref(db, `tickets/${id}`), { status: newStatus });
   };
 
@@ -95,46 +99,54 @@ function App() {
     update(ref(db, `tickets/${id}`), { description: value });
   };
 
-  // Separate open and done
-  const openTickets = Object.entries(tickets).filter(([, t]) => t.status === "open");
-  const doneTickets = Object.entries(tickets).filter(([, t]) => t.status === "done");
+  // Non-done tickets = "open group"
+  const openTickets = Object.entries(tickets)
+    .filter(([, t]) => t.status !== "done");
+
+  // done tickets
+  const doneTickets = Object.entries(tickets)
+    .filter(([, t]) => t.status === "done");
 
   /**
-   * On drag end, we reorder the local array in 1D,
-   * but display them in a 2D grid via `rectSortingStrategy`.
+   * handleDragEnd (like a local reorder in the same category).
+   * If you want cross-category drag, you'd add logic for that.
    */
   const handleDragEnd = async ({ active, over }) => {
     if (!over || active.id === over.id) return;
 
-    const activeData = tickets[active.id];
-    const overData = tickets[over.id];
-    // Only swap if both exist & same category
-    if (!activeData || !overData) return;
-    if (activeData.category !== overData.category) return;
+    const activeId = active.id;
+    const overId = over.id;
 
-    // Gather all open tickets for that category
-    const cat = activeData.category;
+    const activeTicket = tickets[activeId];
+    const overTicket = tickets[overId];
+    if (!activeTicket || !overTicket) return;
+
+    if (activeTicket.category !== overTicket.category) return;
+
+    // gather that category's non-done tickets
+    const cat = activeTicket.category;
     const catGroup = Object.entries(tickets)
-      .filter(([, t]) => t.status === "open" && t.category === cat)
-      .sort((a, b) => (a[1].position || 0) - (b[1].position || 0));
+      .filter(([, t]) => t.status !== "done" && t.category === cat)
+      .sort((a, b) => (a[1].position ?? 0) - (b[1].position ?? 0));
 
-    const oldIndex = catGroup.findIndex(([id]) => id === active.id);
-    const newIndex = catGroup.findIndex(([id]) => id === over.id);
+    const oldIndex = catGroup.findIndex(([id]) => id === activeId);
+    const newIndex = catGroup.findIndex(([id]) => id === overId);
+
     if (oldIndex === -1 || newIndex === -1) return;
 
-    // 1. local reorder
+    // local reorder
     const newGroup = [...catGroup];
     const [moved] = newGroup.splice(oldIndex, 1);
     newGroup.splice(newIndex, 0, moved);
 
-    // 2. local update
+    // local state update
     const newTickets = { ...tickets };
     newGroup.forEach(([id], i) => {
-      newTickets[id] = { ...tickets[id], position: i };
+      newTickets[id] = { ...newTickets[id], position: i };
     });
     setTickets(newTickets);
 
-    // 3. push to Firebase
+    // push to Firebase
     for (let i = 0; i < newGroup.length; i++) {
       const [id] = newGroup[i];
       await update(ref(db, `tickets/${id}`), { position: i });
@@ -169,7 +181,6 @@ function App() {
           </button>
         </div>
 
-        {/* Ticket Form */}
         {showTicketForm && (
           <div className="bg-white p-6 rounded-2xl shadow space-y-4">
             <h2 className="text-xl font-semibold text-gray-700">📝 Add New Ticket</h2>
@@ -193,6 +204,9 @@ function App() {
               onChange={(e) => setNewTicket({ ...newTicket, description: e.target.value })}
               className="w-full border border-gray-300 p-3 rounded-xl resize-none"
             />
+
+            {/* If you want to set the status at creation, do it here.
+                For now, we default to 'New' automatically. */}
             <select
               className="w-full border border-gray-300 p-3 rounded-xl"
               value={newTicket.category}
@@ -202,6 +216,7 @@ function App() {
                 <option key={cat}>{cat}</option>
               ))}
             </select>
+
             <button
               onClick={handleAddTicket}
               className="w-full bg-blue-600 text-white px-4 py-2 rounded-xl hover:bg-blue-700"
@@ -211,7 +226,6 @@ function App() {
           </div>
         )}
 
-        {/* Category Form */}
         {showCategoryForm && (
           <div className="bg-white p-6 rounded-2xl shadow space-y-4">
             <h2 className="text-xl font-semibold text-gray-700">📂 Add New Category</h2>
@@ -233,15 +247,16 @@ function App() {
           </div>
         )}
 
+        {/* Drag+Drop for non-done tickets */}
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
           onDragEnd={handleDragEnd}
         >
           {categories.map((cat) => {
-            // gather open tickets in this category
+            // gather non-done tickets in this category
             const group = Object.entries(tickets)
-              .filter(([, t]) => t.status === "open" && t.category === cat)
+              .filter(([, t]) => t.status !== "done" && t.category === cat)
               .sort((a, b) => (a[1].position ?? 0) - (b[1].position ?? 0));
 
             if (group.length === 0) return null;
@@ -251,12 +266,7 @@ function App() {
                 <h3 className="text-2xl font-bold text-blue-700 border-b border-blue-200 pb-1">
                   📂 {cat}
                 </h3>
-
-                <SortableContext
-                  items={group.map(([id]) => id)}
-                  strategy={rectSortingStrategy} // 2D strategy
-                >
-                  {/* 2 columns card layout */}
+                <SortableContext items={group.map(([id]) => id)} strategy={rectSortingStrategy}>
                   <div className="grid md:grid-cols-2 gap-4">
                     {group.map(([id, ticket]) => (
                       <TicketCard
@@ -275,11 +285,11 @@ function App() {
           })}
         </DndContext>
 
-        {/* Completed Tickets */}
+        {/* Done tickets */}
         {doneTickets.length > 0 && (
           <div className="pt-10 space-y-4">
             <h2 className="text-xl font-bold text-green-700 border-b border-green-200 pb-1">
-              ✅ Completed Tickets
+              ✅ Done Tickets
             </h2>
             <div className="grid md:grid-cols-2 gap-4">
               {doneTickets.map(([id, ticket]) => (
